@@ -140,9 +140,10 @@ def generate_index_html():
     cards = ''
     for cid, co in _companies.items():
         cfg = co['config']
-        cards += f'''<a href="/{cid}/" class="company-card">
+        color = cfg.get('theme_color', '#C41E3A')
+        cards += f'''<a href="/{cid}/" class="company-card" style="--card-color:{color}">
             <div class="company-name">{cfg.get("name", cid)}</div>
-            <div class="company-brand">{cfg.get("brand", "")}</div>
+            <div class="company-brand" style="color:{color}">{cfg.get("brand", "")}</div>
             <div class="company-path">/{cid}/</div>
         </a>'''
     return f'''<!DOCTYPE html>
@@ -153,10 +154,10 @@ body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;backg
 h1{{font-size:28px;margin-bottom:8px}}
 .sub{{color:#888;margin-bottom:40px;font-size:14px}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;max-width:900px;width:100%;padding:0 20px}}
-.company-card{{background:#222;border:1px solid #333;border-radius:12px;padding:24px;text-decoration:none;color:#fff;transition:transform .2s,box-shadow .2s}}
-.company-card:hover{{transform:translateY(-4px);box-shadow:0 8px 24px rgba(196,30,58,.3);border-color:#C41E3A}}
+.company-card{{background:#222;border:1px solid #333;border-radius:12px;padding:24px;text-decoration:none;color:#fff;transition:transform .2s,box-shadow .2s;border-top:3px solid var(--card-color)}}
+.company-card:hover{{transform:translateY(-4px);box-shadow:0 8px 24px color-mix(in srgb,var(--card-color) 40%,transparent);border-color:var(--card-color)}}
 .company-name{{font-size:18px;font-weight:700;margin-bottom:4px}}
-.company-brand{{font-size:13px;color:#C41E3A;font-weight:600;letter-spacing:1px}}
+.company-brand{{font-size:13px;font-weight:600;letter-spacing:1px}}
 .company-path{{font-size:12px;color:#666;margin-top:12px}}
 </style></head><body>
 <h1>勤奋指数看板</h1>

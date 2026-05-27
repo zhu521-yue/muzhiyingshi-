@@ -37,14 +37,15 @@ def api_get(url):
         raise
 
 
-def get_token(config, token_cache):
-    if token_cache.get('token') and time.time() < token_cache.get('expires_at', 0):
-        return token_cache['token']
+def get_token(app_key, app_secret, token_cache):
+    cache_key = app_key
+    if token_cache.get(cache_key) and time.time() < token_cache.get(cache_key + '_exp', 0):
+        return token_cache[cache_key]
     resp = api_post('https://api.dingtalk.com/v1.0/oauth2/accessToken',
-                    {'appKey': config['app_key'], 'appSecret': config['app_secret']})
-    token_cache['token'] = resp['accessToken']
-    token_cache['expires_at'] = time.time() + resp.get('expireIn', 7200) - 300
-    return token_cache['token']
+                    {'appKey': app_key, 'appSecret': app_secret})
+    token_cache[cache_key] = resp['accessToken']
+    token_cache[cache_key + '_exp'] = time.time() + resp.get('expireIn', 7200) - 300
+    return token_cache[cache_key]
 
 
 def get_sub_depts(token, dept_id):
@@ -163,62 +164,82 @@ def classify_job(position):
     return '职能岗'
 
 
-def load_data(config, token_cache, year=None, months=None):
-    """从钉钉 API 获取考勤数据并聚合，config 为公司配置字典"""
-    try:
-        token = get_token(config, token_cache)
-    except Exception as e:
-        return {'error': f'获取token失败: {e}'}
+def _get_credentials(config):
+    """获取凭证列表：支持单个或多个钉钉应用"""
+    if 'app_keys' in config:
+        return config['app_keys']
+    return [{'app_key': config['app_key'], 'app_secret': config['app_secret']}]
 
-    dept_root = config['dept_root']
-    dept_ids = config.get('dept_ids', [])
+
+def load_data(config, token_cache, year=None, months=None):
+    """从钉钉 API 获取考勤数据并聚合，支持多凭证合并"""
+    credentials = _get_credentials(config)
+    tokens = []
+    for cred in credentials:
+        try:
+            t = get_token(cred['app_key'], cred['app_secret'], token_cache)
+            tokens.append((t, cred))
+        except Exception as e:
+            return {'error': f'获取token失败({cred["app_key"][:8]}...): {e}'}
+
+    # 全局默认的 dept_root/dept_ids（单凭证模式用）
+    default_dept_root = config.get('dept_root', 1)
+    default_dept_ids = config.get('dept_ids', [1])
+
     now = datetime.now()
     if year is None:
         year = now.year
     if months is None:
         months = config.get('months', list(range(1, now.month + 1)))
 
+    # 从所有凭证获取部门和用户（合并去重）
     dept_name_map = {}
-    root_subs = get_sub_depts(token, dept_root)
-    for d in root_subs:
-        dept_name_map[d['id']] = d.get('name', '')
-        for sd in get_sub_depts(token, d['id']):
-            dept_name_map[sd['id']] = sd.get('name', '')
+    all_users = []
+    seen_ids = set()
 
-    # 排除部门：递归收集所有需要排除的部门ID
+    for token, cred in tokens:
+        dept_root = cred.get('dept_root', default_dept_root)
+        dept_ids = cred.get('dept_ids', default_dept_ids)
+
+        root_subs = get_sub_depts(token, dept_root)
+        for d in root_subs:
+            dept_name_map[d['id']] = d.get('name', '')
+            for sd in get_sub_depts(token, d['id']):
+                dept_name_map[sd['id']] = sd.get('name', '')
+
+        for did in dept_ids:
+            for u in get_users_recursive(token, did):
+                if u['userid'] not in seen_ids:
+                    seen_ids.add(u['userid'])
+                    all_users.append(u)
+        for d in root_subs:
+            if d['id'] in dept_ids:
+                continue
+            name = d.get('name', '')
+            if '营销' in name or '事业部' in name or '中心' in name:
+                for u in get_users_recursive(token, d['id']):
+                    if u['userid'] not in seen_ids:
+                        seen_ids.add(u['userid'])
+                        all_users.append(u)
+
+    # 排除部门
     exclude_depts = set(config.get('exclude_depts', []))
     if exclude_depts:
         def _collect_exclude(did):
             exclude_depts.add(did)
-            for sd in get_sub_depts(token, did):
-                _collect_exclude(sd['id'])
+            for tk, _ in tokens:
+                for sd in get_sub_depts(tk, did):
+                    _collect_exclude(sd['id'])
         for ed in list(exclude_depts):
             _collect_exclude(ed)
 
-    print(f"[{config['name']}] 获取用户列表...")
-    all_users = []
-    seen_ids = set()
-    for did in dept_ids:
-        for u in get_users_recursive(token, did):
-            if u['userid'] not in seen_ids:
-                seen_ids.add(u['userid'])
-                all_users.append(u)
-    for d in root_subs:
-        if d['id'] in dept_ids:
-            continue
-        name = d.get('name', '')
-        if '营销' in name or '事业部' in name or '中心' in name:
-            for u in get_users_recursive(token, d['id']):
-                if u['userid'] not in seen_ids:
-                    seen_ids.add(u['userid'])
-                    all_users.append(u)
+    print(f"[{config['name']}] 获取用户列表... ({len(all_users)} 人)")
 
     all_user_map = {}
     for u in all_users:
         uid = u['userid']
         if uid not in all_user_map:
             u_dept_ids = u.get('department', [])
-            # 跳过属于排除部门的用户
             if exclude_depts and any(d in exclude_depts for d in u_dept_ids):
                 continue
             dept_name = next((dept_name_map[d] for d in u_dept_ids if d in dept_name_map), '')
@@ -238,10 +259,16 @@ def load_data(config, token_cache, year=None, months=None):
         last_day = calendar.monthrange(year, m)[1]
         months_range.append((f'{year}-{m:02d}-01 00:00:00', f'{year}-{m:02d}-{last_day} 23:59:59'))
 
+    # 从所有凭证获取考勤记录（合并）
     all_records = []
-    for mf, mt in months_range:
-        print(f"  查询 {mf[:7]}...")
-        all_records.extend(get_attendance(token, all_user_ids, mf, mt))
+    for token, cred in tokens:
+        for mf, mt in months_range:
+            print(f"  查询 {mf[:7]}...")
+            all_records.extend(get_attendance(token, all_user_ids, mf, mt))
+
+    # 加班计算参数：起始18:30，上限从配置读取（默认20:30）
+    ot_start = 18 * 60 + 30
+    ot_cap = config.get('overtime_cap_hour', 20) * 60 + config.get('overtime_cap_minute', 30)
 
     person_data = {}
     for rec in all_records:
@@ -261,8 +288,8 @@ def load_data(config, token_cache, year=None, months=None):
         entry['days'].add(dt.strftime('%Y-%m-%d'))
         if rec.get('checkType') == 'OffDuty':
             mins = dt.hour * 60 + dt.minute
-            if mins >= 18 * 60 + 30:
-                entry['diligence'] += (min(mins, 20 * 60 + 30) - 18 * 60 - 30) // 30
+            if mins >= ot_start:
+                entry['diligence'] += (min(mins, ot_cap) - ot_start) // 30
 
     return _aggregate(all_user_map, person_data, month_labels, all_records)
 

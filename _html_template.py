@@ -36,7 +36,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Mic
 .header{{background:var(--black);color:var(--white);padding:0 40px;height:72px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 2px 20px rgba(0,0,0,.4)}}
 .header-left{{display:flex;align-items:center;gap:16px}}
 .header-logo{{display:flex;align-items:center;gap:10px}}
-.header-logo img{{height:36px;width:auto}}
+.header-logo .logo-wrap{{width:40px;height:40px;border-radius:8px;background:var(--primary);display:flex;align-items:center;justify-content:center;padding:4px}}
+.header-logo .logo-wrap img{{height:28px;width:auto;filter:brightness(0) invert(1)}}
 .header-logo .brand{{font-size:20px;font-weight:900;letter-spacing:2px;color:var(--white)}}
 .header-divider{{width:1px;height:28px;background:rgba(255,255,255,.2)}}
 .header-title{{font-size:15px;font-weight:500;opacity:.85}}
@@ -142,7 +143,7 @@ tbody tr:hover{{background:{theme_color}0A}}
 <header class="header">
   <div class="header-left">
     <div class="header-logo">
-      <img src="{logo_url}" alt="{brand}">
+      <div class="logo-wrap"><img src="{logo_url}" alt="{brand}"></div>
       <div class="brand">{brand}</div>
     </div>
     <div class="header-divider"></div>
