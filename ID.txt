@@ -1,0 +1,7 @@
+App ID  :
+47ed4074-887b-4a27-b754-6ea9f47af79c
+原企业内部应用AgentId
+3317430763
+Client ID (原 AppKey 和 SuiteKey)
+dingtnfjsjhygyarpqlq
+Client Secret (原 AppSecret 和 SuiteSecret)93vjkfnnggZAoLoiBsflQbl2pEjF6Yid-d0VVRfumXnjYMuaNAXK_J8xluGhoL57
