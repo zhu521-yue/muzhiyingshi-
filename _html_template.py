@@ -14,7 +14,7 @@ def get_html_template(company_name, brand, theme_color, logo_url, company_id):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{brand} {company_name} · 勤奋指数看板</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="/{company_id}/static/chart.min.js"></script>
 <style>
 :root {{
   --primary:{theme_color};
@@ -290,9 +290,14 @@ function renderDashboard(d){{
     <div class="section-title reveal">全公司勤奋排名 TOP20 <span class="s-tag">RANKING</span></div>
     <div class="table-wrap reveal">
       <div class="table-header"><h3>全公司 · 勤奋次数 TOP 20</h3></div>
-      <div class="table-scroll"><table id="tblRank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>岗位</th><th>累计勤奋次数</th><th>月均</th></tr><tr class="filter-row"><th><input onkeyup="filterTable('tblRank')" placeholder="筛选"></th><th><input onkeyup="filterTable('tblRank')" placeholder="筛选"></th><th><input onkeyup="filterTable('tblRank')" placeholder="筛选"></th><th><input onkeyup="filterTable('tblRank')" placeholder="筛选"></th><th><input onkeyup="filterTable('tblRank')" placeholder="筛选"></th><th><input onkeyup="filterTable('tblRank')" placeholder="筛选"></th><th><input onkeyup="filterTable('tblRank')" placeholder="筛选"></th></tr></thead><tbody id="rankBody"></tbody></table></div>
+      <div class="table-scroll"><table id="tblRank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>岗位</th><th>累计勤奋次数</th><th>月均</th></tr><tr class="filter-row"><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody id="rankBody"></tbody></table></div>
     </div>`;
-  renderSysCards(d);renderCharts(d);renderHeatmap(d);renderSysTabs(d);renderRanking(d);initReveal();
+  try{{renderSysCards(d)}}catch(e){{console.error('renderSysCards:',e)}}
+  try{{renderCharts(d)}}catch(e){{console.error('renderCharts:',e)}}
+  try{{renderHeatmap(d)}}catch(e){{console.error('renderHeatmap:',e)}}
+  try{{renderSysTabs(d)}}catch(e){{console.error('renderSysTabs:',e)}}
+  try{{renderRanking(d)}}catch(e){{console.error('renderRanking:',e)}}
+  initReveal();
 }}
 
 function renderSysCards(d){{
@@ -349,22 +354,24 @@ function renderHeatmap(d){{
 
 function renderSysTabs(d){{
   const jobs=d.job_types||['全部岗位','职能岗','营销岗','产品岗'];
+  console.log('renderSysTabs jobs:', jobs, 'keys in d:', Object.keys(d));
   const tabsEl=document.getElementById('sysTabs');
   const contentEl=document.getElementById('sysContent');
+  if(!tabsEl||!contentEl){{console.error('sysTabs or sysContent not found');return;}}
   tabsEl.innerHTML=jobs.map((s,i)=>`<button class="tab ${{i===0?'active':''}}" onclick="switchTab('${{s}}',this)">${{s}}</button>`).join('');
   let html='';
   jobs.forEach((s,i)=>{{
-    const sys=d[s];if(!sys)return;
-    const maxD=Math.max(...sys.departments.map(r=>r.人均勤奋次数),1);
-    const maxR=Math.max(...sys.rankings.map(r=>r.累计勤奋次数),1);
-    const tid='tbl_'+s.replace(/[^a-zA-Z0-9]/g,'_')+'_';
+    const sys=d[s];
+    if(!sys){{console.warn('No data for job type:', s);return;}}
+    console.log('Rendering tab:', s, 'depts:', sys.departments.length, 'ranks:', sys.rankings.length);
+    const maxD=Math.max(...sys.departments.map(r=>r.人均勤奋次数),1)||1;
+    const maxR=Math.max(...sys.rankings.map(r=>r.累计勤奋次数),1)||1;
+    const tid='tbl_'+i+'_';
     let deptRows=sys.departments.map((r,idx)=>`<tr><td><span class="rank ${{idx<3?'rank-'+(idx+1):''}}"> ${{idx+1}}</span></td><td><strong>${{r.部门}}</strong></td><td>${{r.人次}}</td><td><strong style="color:var(--primary)">${{r.人均勤奋次数}}</strong><div class="progress-bar"><div class="fill" style="width:${{(r.人均勤奋次数/maxD*100).toFixed(1)}}%"></div></div></td><td>${{r.勤奋次数合计}}</td></tr>`).join('');
     let rankRows=sys.rankings.slice(0,20).map(r=>`<tr><td><span class="rank ${{r.排名<=3?'rank-'+r.排名:''}}">${{r.排名}}</span></td><td><strong>${{r.姓名}}</strong></td><td>${{r.工号}}</td><td>${{r.部门}}</td><td><strong style="color:var(--primary)">${{r.累计勤奋次数}}</strong><div class="progress-bar"><div class="fill" style="width:${{(r.累计勤奋次数/maxR*100).toFixed(1)}}%"></div></div></td><td>${{r.月均勤奋次数}}</td></tr>`).join('');
-    const deptFilter='<tr class="filter-row">'+['#','部门','人次','人均勤奋','合计'].map(()=>'<th><input onkeyup="filterTable(\\''+tid+'dept\\')" placeholder="筛选"></th>').join('')+'</tr>';
-    const rankFilter='<tr class="filter-row">'+['排名','姓名','工号','部门','累计勤奋','月均'].map(()=>'<th><input onkeyup="filterTable(\\''+tid+'rank\\')" placeholder="筛选"></th>').join('')+'</tr>';
     html+=`<div class="tab-content ${{i===0?'active':''}}" id="tab-${{s}}">
-      <div class="table-wrap"><div class="table-header"><h3>${{s}} · 部门排名</h3></div><div class="table-scroll"><table id="${{tid}}dept"><thead><tr><th>#</th><th>部门</th><th>人次</th><th>人均勤奋</th><th>合计</th></tr>${{deptFilter}}</thead><tbody>${{deptRows}}</tbody></table></div></div>
-      <div class="table-wrap"><div class="table-header"><h3>${{s}} · 个人排名</h3></div><div class="table-scroll"><table id="${{tid}}rank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>累计勤奋</th><th>月均</th></tr>${{rankFilter}}</thead><tbody>${{rankRows}}</tbody></table></div></div>
+      <div class="table-wrap"><div class="table-header"><h3>${{s}} · 部门排名</h3></div><div class="table-scroll"><table id="${{tid}}dept"><thead><tr><th>#</th><th>部门</th><th>人次</th><th>人均勤奋</th><th>合计</th></tr><tr class="filter-row"><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody>${{deptRows}}</tbody></table></div></div>
+      <div class="table-wrap"><div class="table-header"><h3>${{s}} · 个人排名</h3></div><div class="table-scroll"><table id="${{tid}}rank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>累计勤奋</th><th>月均</th></tr><tr class="filter-row"><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody>${{rankRows}}</tbody></table></div></div>
     </div>`;
   }});
   contentEl.innerHTML=html;

@@ -136,33 +136,55 @@ def force_company_refresh(cid, year=None, months=None):
 
 
 def generate_index_html():
-    """生成公司列表首页"""
-    cards = ''
+    """生成公司列表首页：上方总公司，下方分公司，背景图"""
+    # 分离总公司和分公司
+    parent_card = ''
+    sub_cards = ''
     for cid, co in _companies.items():
         cfg = co['config']
         color = cfg.get('theme_color', '#C41E3A')
-        cards += f'''<a href="/{cid}/" class="company-card" style="--card-color:{color}">
+        card = f'''<a href="/{cid}/" class="company-card" style="--card-color:{color}">
             <div class="company-name">{cfg.get("name", cid)}</div>
             <div class="company-brand" style="color:{color}">{cfg.get("brand", "")}</div>
             <div class="company-path">/{cid}/</div>
         </a>'''
+        if cid == 'xiwen':
+            parent_card = card
+        else:
+            sub_cards += card
+
     return f'''<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>勤奋指数看板 - 公司列表</title>
+<title>喜文控股 · 勤奋指数看板</title>
 <style>
-body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#1A1A1A;color:#fff;margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center}}
-h1{{font-size:28px;margin-bottom:8px}}
-.sub{{color:#888;margin-bottom:40px;font-size:14px}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;max-width:900px;width:100%;padding:0 20px}}
-.company-card{{background:#222;border:1px solid #333;border-radius:12px;padding:24px;text-decoration:none;color:#fff;transition:transform .2s,box-shadow .2s;border-top:3px solid var(--card-color)}}
-.company-card:hover{{transform:translateY(-4px);box-shadow:0 8px 24px color-mix(in srgb,var(--card-color) 40%,transparent);border-color:var(--card-color)}}
+body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#0a0a0a;color:#fff;margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background-image:url('/static/bg.jpg');background-size:cover;background-position:center;background-attachment:fixed}}
+body::before{{content:'';position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:0}}
+.page{{position:relative;z-index:1;width:100%;max-width:1000px;padding:60px 20px;display:flex;flex-direction:column;align-items:center}}
+h1{{font-size:32px;margin-bottom:4px;font-weight:900;letter-spacing:2px}}
+.sub{{color:rgba(255,255,255,.5);margin-bottom:40px;font-size:14px}}
+.section-label{{font-size:12px;font-weight:700;letter-spacing:3px;color:rgba(255,255,255,.4);text-transform:uppercase;margin-bottom:12px;align-self:flex-start;padding-left:4px}}
+.parent-section{{width:100%;margin-bottom:40px}}
+.parent-section .company-card{{max-width:100%;padding:32px;font-size:1.1em}}
+.sub-section{{width:100%}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;width:100%}}
+.company-card{{background:rgba(30,30,30,.85);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:24px;text-decoration:none;color:#fff;transition:transform .2s,box-shadow .2s,border-color .2s;border-top:3px solid var(--card-color)}}
+.company-card:hover{{transform:translateY(-4px);box-shadow:0 8px 32px color-mix(in srgb,var(--card-color) 40%,transparent);border-color:var(--card-color)}}
 .company-name{{font-size:18px;font-weight:700;margin-bottom:4px}}
 .company-brand{{font-size:13px;font-weight:600;letter-spacing:1px}}
-.company-path{{font-size:12px;color:#666;margin-top:12px}}
+.company-path{{font-size:12px;color:rgba(255,255,255,.35);margin-top:12px}}
 </style></head><body>
-<h1>勤奋指数看板</h1>
-<div class="sub">选择公司查看看板</div>
-<div class="grid">{cards}</div>
+<div class="page">
+  <h1>喜文控股集团</h1>
+  <div class="sub">勤奋指数看板 · 选择公司查看数据</div>
+  <div class="parent-section">
+    <div class="section-label">总公司</div>
+    <div class="grid">{parent_card}</div>
+  </div>
+  <div class="sub-section">
+    <div class="section-label">分公司</div>
+    <div class="grid">{sub_cards}</div>
+  </div>
+</div>
 </body></html>'''
 
 
@@ -206,6 +228,38 @@ class Handler(BaseHTTPRequestHandler):
         if not parts:
             html = generate_index_html()
             self._html(html)
+            return
+
+        # 静态文件：背景图
+        if path == '/static/bg.jpg':
+            bg_path = os.path.join(BASE_DIR, '59.jpg')
+            if os.path.exists(bg_path):
+                with open(bg_path, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/jpeg')
+                self.send_header('Cache-Control', 'public, max-age=86400')
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_response(404)
+                self.end_headers()
+            return
+
+        # 静态文件：chart.min.js（匹配 /{company}/static/chart.min.js）
+        if len(parts) >= 2 and parts[-1] == 'chart.min.js' and 'static' in parts:
+            js_path = os.path.join(BASE_DIR, 'chart.min.js')
+            if os.path.exists(js_path):
+                with open(js_path, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/javascript')
+                self.send_header('Cache-Control', 'public, max-age=86400')
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_response(404)
+                self.end_headers()
             return
 
         cid = parts[0]
