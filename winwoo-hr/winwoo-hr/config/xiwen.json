@@ -1,12 +1,12 @@
 {
-  "name": "木植控股有限公司",
-  "brand": "MUZHI",
+  "name": "宁波喜文企业管理有限公司",
+  "brand": "XIWEN",
   "app_keys": [
     {
       "app_key": "dingtnfjsjhygyarpqlq",
       "app_secret": "93vjkfnnggZAoLoiBsflQbl2pEjF6Yid-d0VVRfumXnjYMuaNAXK_J8xluGhoL57",
-      "dept_root": 450097425,
-      "dept_ids": [450097425]
+      "dept_root": 1,
+      "dept_ids": [1]
     },
     {
       "app_key": "dingqmkdxwmxblcxuulz",
@@ -16,8 +16,8 @@
     }
   ],
   "months": [1, 2, 3, 4],
-  "theme_color": "#2E7D32",
-  "logo": "木植控股.png",
-  "overtime_cap_hour": 22,
+  "theme_color": "#1A237E",
+  "logo": "喜文4.png",
+  "overtime_cap_hour": 20,
   "overtime_cap_minute": 30
 }

@@ -8,33 +8,65 @@ import calendar
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# SSL 处理：兼容 PyInstaller 打包后 _ssl DLL 缺失的问题
+try:
+    import ssl
+    _SSL_CTX = ssl._create_unverified_context()
+except ImportError:
+    _SSL_CTX = None
 
 
-def api_post(url, payload, headers=None):
+def api_post(url, payload, headers=None, retries=2):
     data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(url, data=data, method='POST')
     req.add_header('Content-Type', 'application/json')
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='replace')[:500]
-        print(f"HTTP ERROR {e.code} for {url}: {body}")
-        raise
+    for attempt in range(retries + 1):
+        try:
+            kwargs = {'timeout': 30}
+            if _SSL_CTX:
+                kwargs['context'] = _SSL_CTX
+            with urllib.request.urlopen(req, **kwargs) as resp:
+                return json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='replace')[:500]
+            if attempt < retries and e.code >= 500:
+                time.sleep(1 * (attempt + 1))
+                continue
+            print(f"HTTP ERROR {e.code} for {url}: {body}")
+            raise
+        except Exception as e:
+            if attempt < retries:
+                time.sleep(1 * (attempt + 1))
+                continue
+            raise
 
 
-def api_get(url):
+def api_get(url, retries=2):
     req = urllib.request.Request(url)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='replace')[:500]
-        print(f"HTTP ERROR {e.code} for {url}: {body}")
-        raise
+    for attempt in range(retries + 1):
+        try:
+            kwargs = {'timeout': 30}
+            if _SSL_CTX:
+                kwargs['context'] = _SSL_CTX
+            with urllib.request.urlopen(req, **kwargs) as resp:
+                return json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='replace')[:500]
+            if attempt < retries and e.code >= 500:
+                time.sleep(1 * (attempt + 1))
+                continue
+            print(f"HTTP ERROR {e.code} for {url}: {body}")
+            raise
+        except Exception as e:
+            if attempt < retries:
+                time.sleep(1 * (attempt + 1))
+                continue
+            raise
 
 
 def get_token(app_key, app_secret, token_cache):
@@ -77,25 +109,45 @@ def get_dept_users(token, dept_id):
 
 
 def get_users_recursive(token, dept_id):
-    users = get_dept_users(token, dept_id)
-    for sub in get_sub_depts(token, dept_id):
-        users.extend(get_users_recursive(token, sub['id']))
+    """递归获取部门下所有用户（并发版本）"""
+    # 并发 BFS 收集所有子部门ID
+    all_dept_ids = [dept_id]
+    queue = [dept_id]
+    while queue:
+        # 并发获取当前层所有部门的子部门
+        next_queue = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(get_sub_depts, token, did): did for did in queue}
+            for future in as_completed(futures):
+                try:
+                    subs = future.result()
+                    for s in subs:
+                        all_dept_ids.append(s['id'])
+                        next_queue.append(s['id'])
+                except Exception:
+                    pass
+        queue = next_queue
+
+    # 并发获取各部门用户
+    users = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(get_dept_users, token, did): did for did in all_dept_ids}
+        for future in as_completed(futures):
+            try:
+                users.extend(future.result())
+            except Exception:
+                pass
     return users
 
 
 def get_attendance(token, user_ids, date_from, date_to):
-    try:
-        return _get_attendance_v1(token, user_ids, date_from, date_to)
-    except Exception as e:
-        print(f"  v1.0 API 失败: {e}，回退旧版 oapi")
-        return _get_attendance_oapi(token, user_ids, date_from, date_to)
-
-
-def _get_attendance_v1(token, user_ids, date_from, date_to):
-    headers = {'x-acs-dingtalk-access-token': token}
+    """获取考勤记录（使用旧版 oapi，并发请求）"""
     records = []
     start = datetime.strptime(date_from, '%Y-%m-%d %H:%M:%S')
     end = datetime.strptime(date_to, '%Y-%m-%d %H:%M:%S')
+
+    # 构建所有请求任务：(week_from, week_to, user_batch)
+    tasks = []
     current = start
     while current < end:
         week_end = min(current + timedelta(days=6), end)
@@ -103,56 +155,37 @@ def _get_attendance_v1(token, user_ids, date_from, date_to):
         wt = week_end.strftime('%Y-%m-%d 23:59:59')
         for i in range(0, len(user_ids), 50):
             batch = user_ids[i:i+50]
-            cursor = 0
-            while True:
-                payload = {'userIds': batch, 'checkDateFrom': wf,
-                           'checkDateTo': wt, 'cursor': cursor, 'size': 100}
-                resp = api_post('https://api.dingtalk.com/v1.0/attendance/records/query',
-                                payload, headers=headers)
-                for rec in resp.get('result', []):
-                    t_str = rec.get('userCheckTime', '')
-                    if t_str:
-                        try:
-                            rec['userCheckTime'] = int(datetime.strptime(
-                                t_str, '%Y-%m-%d %H:%M:%S').timestamp() * 1000)
-                        except Exception:
-                            pass
-                    records.append(rec)
-                if resp.get('hasMore'):
-                    cursor = resp.get('nextCursor', 0)
-                else:
-                    break
+            tasks.append((wf, wt, batch))
         current = week_end + timedelta(seconds=1)
-    return records
 
+    def _fetch_batch(task):
+        wf, wt, batch = task
+        batch_records = []
+        offset = 0
+        while True:
+            payload = {'workDateFrom': wf, 'workDateTo': wt,
+                       'userIdList': batch, 'offset': offset, 'limit': 50}
+            try:
+                resp = api_post(
+                    f'https://oapi.dingtalk.com/attendance/list?access_token={token}', payload)
+            except Exception:
+                break
+            recs = resp.get('recordresult', [])
+            batch_records.extend(recs)
+            if resp.get('hasMore'):
+                offset += 50
+            else:
+                break
+        return batch_records
 
-def _get_attendance_oapi(token, user_ids, date_from, date_to):
-    records = []
-    start = datetime.strptime(date_from, '%Y-%m-%d %H:%M:%S')
-    end = datetime.strptime(date_to, '%Y-%m-%d %H:%M:%S')
-    current = start
-    while current < end:
-        week_end = min(current + timedelta(days=6), end)
-        wf = current.strftime('%Y-%m-%d 00:00:00')
-        wt = week_end.strftime('%Y-%m-%d 23:59:59')
-        for i in range(0, len(user_ids), 50):
-            batch = user_ids[i:i+50]
-            offset = 0
-            while True:
-                payload = {'workDateFrom': wf, 'workDateTo': wt,
-                           'userIdList': batch, 'offset': offset, 'limit': 50}
-                try:
-                    resp = api_post(
-                        f'https://oapi.dingtalk.com/attendance/list?access_token={token}', payload)
-                except Exception:
-                    break
-                recs = resp.get('recordresult', [])
-                records.extend(recs)
-                if resp.get('hasMore'):
-                    offset += 50
-                else:
-                    break
-        current = week_end + timedelta(seconds=1)
+    # 并发执行（限制并发数避免被限流）
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(_fetch_batch, t) for t in tasks]
+        for future in as_completed(futures):
+            try:
+                records.extend(future.result())
+            except Exception as e:
+                print(f"  考勤批次请求失败: {e}")
     return records
 
 
@@ -171,28 +204,11 @@ def _get_credentials(config):
     return [{'app_key': config['app_key'], 'app_secret': config['app_secret']}]
 
 
-def load_data(config, token_cache, year=None, months=None):
-    """从钉钉 API 获取考勤数据并聚合，支持多凭证合并"""
-    credentials = _get_credentials(config)
-    tokens = []
-    for cred in credentials:
-        try:
-            t = get_token(cred['app_key'], cred['app_secret'], token_cache)
-            tokens.append((t, cred))
-        except Exception as e:
-            return {'error': f'获取token失败({cred["app_key"][:8]}...): {e}'}
-
-    # 全局默认的 dept_root/dept_ids（单凭证模式用）
+def _get_all_users(config, tokens):
+    """从所有凭证获取部门和用户（合并去重），返回 all_user_map"""
     default_dept_root = config.get('dept_root', 1)
     default_dept_ids = config.get('dept_ids', [1])
 
-    now = datetime.now()
-    if year is None:
-        year = now.year
-    if months is None:
-        months = config.get('months', list(range(1, now.month + 1)))
-
-    # 从所有凭证获取部门和用户（合并去重）
     dept_name_map = {}
     all_users = []
     seen_ids = set()
@@ -201,39 +217,88 @@ def load_data(config, token_cache, year=None, months=None):
         dept_root = cred.get('dept_root', default_dept_root)
         dept_ids = cred.get('dept_ids', default_dept_ids)
 
-        root_subs = get_sub_depts(token, dept_root)
-        for d in root_subs:
-            dept_name_map[d['id']] = d.get('name', '')
-            for sd in get_sub_depts(token, d['id']):
-                dept_name_map[sd['id']] = sd.get('name', '')
+        # 并发 BFS 收集部门名称映射（从 dept_root 开始）
+        all_sub_ids = []  # 所有子部门ID
+        queue = [dept_root]
+        while queue:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(get_sub_depts, token, did): did for did in queue}
+                next_queue = []
+                for future in as_completed(futures):
+                    try:
+                        subs = future.result()
+                        for d in subs:
+                            dept_name_map[d['id']] = d.get('name', '')
+                            all_sub_ids.append(d['id'])
+                            next_queue.append(d['id'])
+                    except Exception:
+                        pass
+            queue = next_queue
 
-        for did in dept_ids:
-            for u in get_users_recursive(token, did):
-                if u['userid'] not in seen_ids:
-                    seen_ids.add(u['userid'])
-                    all_users.append(u)
-        for d in root_subs:
-            if d['id'] in dept_ids:
-                continue
-            name = d.get('name', '')
-            if '营销' in name or '事业部' in name or '中心' in name:
-                for u in get_users_recursive(token, d['id']):
+        # 获取用户：如果 dept_ids 包含 dept_root，直接用已收集的部门列表
+        if dept_root in dept_ids:
+            # dept_root 下所有部门（包括 dept_root 自身）
+            target_dept_ids = [dept_root] + all_sub_ids
+            print(f"  [{config.get('name','')}] 并发获取 {len(target_dept_ids)} 个部门的用户...")
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(get_dept_users, token, did): did for did in target_dept_ids}
+                for future in as_completed(futures):
+                    try:
+                        for u in future.result():
+                            if u['userid'] not in seen_ids:
+                                seen_ids.add(u['userid'])
+                                all_users.append(u)
+                    except Exception:
+                        pass
+        else:
+            # 非根部门，正常递归
+            for did in dept_ids:
+                for u in get_users_recursive(token, did):
                     if u['userid'] not in seen_ids:
                         seen_ids.add(u['userid'])
                         all_users.append(u)
 
-    # 排除部门
-    exclude_depts = set(config.get('exclude_depts', []))
-    if exclude_depts:
-        def _collect_exclude(did):
-            exclude_depts.add(did)
-            for tk, _ in tokens:
-                for sd in get_sub_depts(tk, did):
-                    _collect_exclude(sd['id'])
-        for ed in list(exclude_depts):
-            _collect_exclude(ed)
+        # 额外获取营销/事业部/中心相关部门的用户（仅当 dept_root 不在 dept_ids 中时）
+        if dept_root not in dept_ids:
+            root_subs = get_sub_depts(token, dept_root)
+            for d in root_subs:
+                if d['id'] in dept_ids:
+                    continue
+                name = d.get('name', '')
+                if '营销' in name or '事业部' in name or '中心' in name:
+                    for u in get_users_recursive(token, d['id']):
+                        if u['userid'] not in seen_ids:
+                            seen_ids.add(u['userid'])
+                            all_users.append(u)
 
-    print(f"[{config['name']}] 获取用户列表... ({len(all_users)} 人)")
+    # 排除部门（利用已有的 dept_name_map 避免额外 API 调用）
+    exclude_depts = set(config.get('exclude_depts', []))
+
+    # 按名称排除部门
+    exclude_dept_names = config.get('exclude_dept_names', [])
+    if exclude_dept_names:
+        for did, dname in dept_name_map.items():
+            if any(en in dname for en in exclude_dept_names):
+                exclude_depts.add(did)
+
+    # 如果有排除部门，收集其所有子部门（从 dept_name_map 中通过 API 递归）
+    if exclude_depts:
+        expanded = set(exclude_depts)
+        for ed in list(exclude_depts):
+            queue = [ed]
+            while queue:
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = {executor.submit(get_sub_depts, tokens[0][0], did): did for did in queue}
+                    next_q = []
+                    for future in as_completed(futures):
+                        try:
+                            for sd in future.result():
+                                expanded.add(sd['id'])
+                                next_q.append(sd['id'])
+                        except Exception:
+                            pass
+                queue = next_q
+        exclude_depts = expanded
 
     all_user_map = {}
     for u in all_users:
@@ -251,47 +316,115 @@ def load_data(config, token_cache, year=None, months=None):
                 'job_type': classify_job(u.get('position', '')),
             }
 
-    print(f"[{config['name']}] 获取考勤记录...")
-    all_user_ids = list(all_user_map.keys())
-    month_labels = [f'{m}月' for m in months]
-    months_range = []
-    for m in months:
-        last_day = calendar.monthrange(year, m)[1]
-        months_range.append((f'{year}-{m:02d}-01 00:00:00', f'{year}-{m:02d}-{last_day} 23:59:59'))
+    return all_user_map
 
-    # 从所有凭证获取考勤记录（合并）
+
+def load_single_month(config, token_cache, year, month):
+    """加载单个月份的个人明细数据，返回 (user_map, person_month_data)
+
+    person_month_data: {uid: {'diligence': int, 'days': [str, ...]}}
+    """
+    credentials = _get_credentials(config)
+    tokens = []
+    for cred in credentials:
+        try:
+            t = get_token(cred['app_key'], cred['app_secret'], token_cache)
+            tokens.append((t, cred))
+        except Exception as e:
+            return None, {'error': f'获取token失败({cred["app_key"][:8]}...): {e}'}
+
+    print(f"[{config['name']}] 获取用户列表...")
+    all_user_map = _get_all_users(config, tokens)
+    print(f"[{config['name']}] 用户数: {len(all_user_map)}")
+
+    # 获取该月考勤
+    last_day = calendar.monthrange(year, month)[1]
+    date_from = f'{year}-{month:02d}-01 00:00:00'
+    date_to = f'{year}-{month:02d}-{last_day} 23:59:59'
+
+    all_user_ids = list(all_user_map.keys())
     all_records = []
     for token, cred in tokens:
-        for mf, mt in months_range:
-            print(f"  查询 {mf[:7]}...")
-            all_records.extend(get_attendance(token, all_user_ids, mf, mt))
+        print(f"  查询 {year}-{month:02d}...")
+        all_records.extend(get_attendance(token, all_user_ids, date_from, date_to))
 
-    # 加班计算参数：起始18:30，上限从配置读取（默认20:30）
+    # 加班计算
     ot_start = 18 * 60 + 30
     ot_cap = config.get('overtime_cap_hour', 20) * 60 + config.get('overtime_cap_minute', 30)
 
-    person_data = {}
+    person_month_data = {}
     for rec in all_records:
         uid = rec.get('userId', '')
         if not uid or uid not in all_user_map:
             continue
-        if uid not in person_data:
-            person_data[uid] = {ml: {'days': set(), 'diligence': 0} for ml in month_labels}
+        if uid not in person_month_data:
+            person_month_data[uid] = {'diligence': 0, 'days': set()}
         uct = rec.get('userCheckTime', 0)
         if not uct:
             continue
         dt = datetime.fromtimestamp(uct / 1000)
-        mk = f'{dt.month}月'
-        if mk not in person_data[uid]:
-            continue
-        entry = person_data[uid][mk]
-        entry['days'].add(dt.strftime('%Y-%m-%d'))
+        person_month_data[uid]['days'].add(dt.strftime('%Y-%m-%d'))
         if rec.get('checkType') == 'OffDuty':
             mins = dt.hour * 60 + dt.minute
             if mins >= ot_start:
-                entry['diligence'] += (min(mins, ot_cap) - ot_start) // 30
+                person_month_data[uid]['diligence'] += (min(mins, ot_cap) - ot_start) // 30
 
-    return _aggregate(all_user_map, person_data, month_labels, all_records)
+    # 转换 days 为 list 以便 JSON 序列化
+    for uid in person_month_data:
+        person_month_data[uid]['days'] = sorted(person_month_data[uid]['days'])
+
+    print(f"[{config['name']}] {month}月数据加载完成: {len(all_user_map)} 人, {len(all_records)} 条记录")
+    return all_user_map, person_month_data
+
+
+def merge_months_and_aggregate(monthly_caches):
+    """合并多个月份的个人明细缓存，重新聚合计算
+
+    monthly_caches: [(month_label, user_map, person_month_data), ...]
+    返回完整的看板数据（与旧 load_data 返回格式一致）
+    """
+    if not monthly_caches:
+        return {'error': '无可用月份数据'}
+
+    # 合并 user_map（取并集，后面的月份可能有新人）
+    merged_user_map = {}
+    for ml, user_map, pmd in monthly_caches:
+        for uid, info in user_map.items():
+            if uid not in merged_user_map:
+                merged_user_map[uid] = info
+
+    # 合并 person_data 为 _aggregate 需要的格式
+    month_labels = [ml for ml, _, _ in monthly_caches]
+    merged_person_data = {}
+    for ml, user_map, pmd in monthly_caches:
+        for uid, data in pmd.items():
+            if uid not in merged_person_data:
+                merged_person_data[uid] = {}
+            merged_person_data[uid][ml] = {
+                'diligence': data['diligence'],
+                'days': set(data['days']) if isinstance(data['days'], list) else data['days'],
+            }
+
+    return _aggregate(merged_user_map, merged_person_data, month_labels, [])
+
+
+def load_data(config, token_cache, year=None, months=None):
+    """兼容旧接口：一次性加载所有月份数据并聚合"""
+    now = datetime.now()
+    if year is None:
+        year = now.year
+    if months is None:
+        months = config.get('months', list(range(1, now.month + 1)))
+
+    monthly_caches = []
+    for month in months:
+        user_map, person_month_data = load_single_month(config, token_cache, year, month)
+        if user_map is None:
+            return person_month_data  # 这是 error dict
+        ml = f'{month}月'
+        monthly_caches.append((ml, user_map, person_month_data))
+
+    return merge_months_and_aggregate(monthly_caches)
 
 
 def _aggregate(all_user_map, person_data, month_labels, all_records):
@@ -406,5 +539,5 @@ def _aggregate(all_user_map, person_data, month_labels, all_records):
               'month_labels': month_labels, 'job_types': job_types}
     for jt in job_types:
         result[jt] = data[jt]
-    print(f"数据加载完成: {len(all_user_map)} 人, {len(all_records)} 条记录")
+    print(f"数据聚合完成: {len(all_user_map)} 人")
     return result

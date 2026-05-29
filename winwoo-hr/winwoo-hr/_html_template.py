@@ -161,9 +161,9 @@ tbody tr:hover{{background:{theme_color}0A}}
     <div class="hero-label">DILIGENCE INDEX</div>
     <div class="hero-title">{company_name}</div>
     <div class="hero-controls">
-      <select id="selYear"></select>年勤奋指数看板 · 数据区间：
-      <select id="selMonthFrom"></select> —
-      <select id="selMonthTo"></select>
+      <select id="selYear"><option value="2026">2026</option><option value="2025">2025</option><option value="2024">2024</option></select>年勤奋指数看板 · 数据区间：
+      <select id="selMonthFrom"><option value="1">1月</option><option value="2">2月</option><option value="3">3月</option><option value="4">4月</option><option value="5">5月</option><option value="6">6月</option><option value="7">7月</option><option value="8">8月</option><option value="9">9月</option><option value="10">10月</option><option value="11">11月</option><option value="12">12月</option></select> —
+      <select id="selMonthTo"><option value="1">1月</option><option value="2">2月</option><option value="3">3月</option><option value="4">4月</option><option value="5">5月</option><option value="6">6月</option><option value="7">7月</option><option value="8">8月</option><option value="9">9月</option><option value="10">10月</option><option value="11">11月</option><option value="12">12月</option></select>
       · 职能岗 / 营销岗 / 产品岗
       <button class="query-btn" onclick="queryData()">查询</button>
     </div>
@@ -182,6 +182,87 @@ const REFRESH_URL='{refresh_url}';
 const PRIMARY='{theme_color}';
 let DATA=null,charts={{}};
 const BLACK='#1A1A1A',GRAY='#888';
+
+// ===== 前端数据缓存 =====
+// {{ "2026_1,2,3,4,5": data, "2026_1": data, ... }}
+const _dataCache={{}};
+// 记录当前已选择的最新参数
+let _lastYear=null,_lastMonths=null;
+
+// ===== 客户端数据子集提取 =====
+function filterDataToMonths(fullData, targetMonths){{
+  if(!fullData||!fullData.month_labels)return null;
+  const targetLabels=targetMonths.map(m=>m+'月');
+  const origLabels=fullData.month_labels;
+  // 如果完全相同，直接返回
+  if(targetLabels.length===origLabels.length&&targetLabels.every((ml,i)=>ml===origLabels[i]))return fullData;
+  // 检查是否为子集
+  if(!targetLabels.every(ml=>origLabels.includes(ml)))return null;
+  
+  const jobTypes=fullData.job_types||[];
+  
+  // 过滤月度汇总
+  const newMonthly=[];
+  let newTtd=0;
+  targetLabels.forEach(ml=>{{
+    const row=fullData.monthly.find(r=>r.月份===ml);
+    if(row){{newMonthly.push(row);newTtd+=row.勤奋次数合计||0;}}
+  }});
+  const na=Math.max(1,newMonthly.length);
+  newMonthly.push({{月份:'合计',总人数:newMonthly.length>0?newMonthly[0].总人数:0,勤奋次数合计:newTtd,人均勤奋次数:Math.round(newTtd/na*100)/100}});
+  
+  // 岗位汇总（不变）
+  const systems=fullData.systems||[];
+  
+  // 交叉分析过滤
+  const newCross=(fullData.cross_analysis||[]).map(row=>{{
+    const nr={{岗位:row.岗位}};
+    let cd=0,cn=0;
+    targetLabels.forEach(ml=>{{nr[ml]=row[ml]||0;cd+=row[ml]||0;cn++;}});
+    nr['累计人均']=cn>0?Math.round(cd/cn*100)/100:0;
+    return nr;
+  }});
+  
+  // 各岗位详情过滤
+  const newData={{}};
+  jobTypes.forEach(jt=>{{
+    const jd=fullData[jt];
+    if(!jd)return;
+    // 月度表
+    const newJtMonthly=targetLabels.map(ml=>jd.monthly.find(r=>r.月份===ml)).filter(Boolean);
+    // 部门（保持原样）
+    const depts=jd.departments||[];
+    // 排名重新计算
+    const rankings=jd.rankings||[];
+    const ratio=targetLabels.length/Math.max(origLabels.length,1);
+    const newRankings=rankings.map(r=>{{
+      const estDiligence=Math.round((r.累计勤奋次数||0)*ratio);
+      return {{...r,累计勤奋次数:estDiligence,月均勤奋次数:Math.round(estDiligence/Math.max(targetLabels.length,1)*100)/100}};
+    }});
+    newRankings.sort((a,b)=>b.累计勤奋次数-a.累计勤奋次数);
+    newRankings.forEach((r,i)=>r.排名=i+1);
+    newData[jt]={{monthly:newJtMonthly,departments:depts,rankings:newRankings}};
+  }});
+  
+  // 全公司排名
+  const allRankings=[];
+  jobTypes.forEach(jt=>newData[jt].rankings.forEach(r=>allRankings.push({{...r,岗位:jt}})));
+  allRankings.sort((a,b)=>b.累计勤奋次数-a.累计勤奋次数);
+  allRankings.forEach((r,i)=>r.排名=i+1);
+  
+  const result={{
+    monthly:newMonthly,systems,month_labels:targetLabels,
+    cross_analysis:newCross,all_rankings:allRankings,
+    data_source:'client_subset',job_types:jobTypes
+  }};
+  jobTypes.forEach(jt=>result[jt]=newData[jt]);
+  return result;
+}}
+
+// ===== 缓存键 =====
+function getCacheKey(year, months){{
+  return year+'_'+months.sort((a,b)=>a-b).join(',');
+}}
 
 // 初始化年月选择器
 (function initControls(){{
@@ -204,7 +285,7 @@ const BLACK='#1A1A1A',GRAY='#888';
   }}
   selFrom.value=1;
   selTo.value=Math.min(now.getMonth()+1,12);
-  // 页面打开时先加载缓存数据（快），用户点查询才强制刷新
+  // 页面打开时加载默认数据
   loadCachedData();
 }})();
 
@@ -212,30 +293,81 @@ async function loadCachedData(){{
   const app=document.getElementById('app');
   app.innerHTML='<div class="loading-screen"><div class="spinner"></div><div>加载中...</div></div>';
   const params=getSelectedParams();
+  // 先尝试前端缓存
+  const cached=tryGetFromCache();
+  if(cached){{
+    DATA=cached;renderDashboard(DATA);
+    return;
+  }}
   try{{
     let res=await fetch(DATA_URL+'?'+params);
     let data=await res.json();
     let retries=0;
-    while(data.loading&&retries<180){{
-      await new Promise(r=>setTimeout(r,3000));
+    while(data.loading&&retries<60){{
+      await new Promise(r=>setTimeout(r,2000));
       res=await fetch(DATA_URL+'?'+params);data=await res.json();retries++;
-      if(data.loading){{const el=app.querySelector('.loading-screen div:last-child');if(el)el.textContent=data.message||'正在加载数据...('+retries*3+'秒)';}}
     }}
-    if(data.loading){{app.innerHTML='<div class="loading-screen"><div>数据仍在加载中，请稍后刷新页面</div></div>';return;}}
     if(data.error){{app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ ${{data.error}}</div><div style="font-size:12px;margin-top:8px">点击"查询"重新获取数据</div></div>`;return;}}
-    DATA=data;renderDashboard(DATA);
+    DATA=data;
+    // 存入缓存
+    saveToCache(data);
+    renderDashboard(DATA);
   }}catch(e){{app.innerHTML=`<div class="loading-screen"><div>点击"查询"获取数据</div></div>`;}}
 }}
 
 function getSelectedParams(){{
-  const now=new Date();
-  const year=parseInt(document.getElementById('selYear').value);
+  const year=document.getElementById('selYear').value;
   const from=parseInt(document.getElementById('selMonthFrom').value);
-  let to=parseInt(document.getElementById('selMonthTo').value);
-  if(year>=now.getFullYear()&&to>now.getMonth()+1)to=now.getMonth()+1;
+  const to=parseInt(document.getElementById('selMonthTo').value);
   const months=[];
   for(let m=Math.min(from,to);m<=Math.max(from,to);m++)months.push(m);
   return `year=${{year}}&months=${{months.join(',')}}`;
+}}
+
+// ===== 缓存读写 =====
+function tryGetFromCache(){{
+  const year=parseInt(document.getElementById('selYear').value);
+  const from=parseInt(document.getElementById('selMonthFrom').value);
+  const to=parseInt(document.getElementById('selMonthTo').value);
+  const months=[];
+  for(let m=Math.min(from,to);m<=Math.max(from,to);m++)months.push(m);
+  const key=getCacheKey(year,months);
+  
+  // 1. 精确命中
+  if(_dataCache[key]){{
+    _lastYear=year;_lastMonths=months;
+    return _dataCache[key];
+  }}
+  // 2. 超集命中：遍历缓存找包含目标月份的超集
+  const targetSet=new Set(months);
+  for(const [ckey,cdata] of Object.entries(_dataCache)){{
+    const [cyear,cmonthsStr]=ckey.split('_');
+    if(parseInt(cyear)!==year)continue;
+    const cMonths=cmonthsStr.split(',').map(Number);
+    const cSet=new Set(cMonths);
+    if([...targetSet].every(m=>cSet.has(m))&&cMonths.length>months.length){{
+      const filtered=filterDataToMonths(cdata,months);
+      if(filtered){{
+        _dataCache[key]=filtered;
+        _lastYear=year;_lastMonths=months;
+        console.log('超集缓存命中: '+cMonths+' → '+months);
+        return filtered;
+      }}
+    }}
+  }}
+  return null;
+}}
+
+function saveToCache(data){{
+  if(!data||data.loading||data.error)return;
+  const year=parseInt(document.getElementById('selYear').value);
+  const from=parseInt(document.getElementById('selMonthFrom').value);
+  const to=parseInt(document.getElementById('selMonthTo').value);
+  const months=[];
+  for(let m=Math.min(from,to);m<=Math.max(from,to);m++)months.push(m);
+  const key=getCacheKey(year,months);
+  _dataCache[key]=data;
+  _lastYear=year;_lastMonths=months;
 }}
 
 function animateNumber(el,target,dur=900,dec=0){{
@@ -298,7 +430,7 @@ function renderDashboard(d){{
   try{{renderSysCards(d)}}catch(e){{console.error('renderSysCards:',e)}}
   try{{renderCharts(d)}}catch(e){{console.error('renderCharts:',e)}}
   try{{renderHeatmap(d)}}catch(e){{console.error('renderHeatmap:',e)}}
-  try{{renderSysTabs(d)}}catch(e){{console.error('renderSysTabs:',e);document.getElementById('sysContent').innerHTML='<div style=\"padding:24px;color:#c00\">岗位详情加载失败: '+e.message+'</div>'}}
+  try{{renderSysTabs(d)}}catch(e){{console.error('renderSysTabs:',e)}}
   try{{renderRanking(d)}}catch(e){{console.error('renderRanking:',e)}}
   initReveal();
 }}
@@ -357,56 +489,38 @@ function renderHeatmap(d){{
 }}
 
 function renderSysTabs(d){{
-  var jobs=d.job_types||['全部岗位','职能岗','营销岗','产品岗'];
-  var tabsEl=document.getElementById('sysTabs');
-  var contentEl=document.getElementById('sysContent');
+  const jobs=d.job_types||['全部岗位','职能岗','营销岗','产品岗'];
+  const tabsEl=document.getElementById('sysTabs');
+  const contentEl=document.getElementById('sysContent');
   if(!tabsEl||!contentEl)return;
-  var tabHtml='';
-  for(var i=0;i<jobs.length;i++){{
-    tabHtml+='<button class="tab '+(i===0?'active':'')+'" onclick="switchTab('+String.fromCharCode(39)+jobs[i]+String.fromCharCode(39)+',this)">'+jobs[i]+'</button>';
-  }}
-  tabsEl.innerHTML=tabHtml;
-  var html='';
-  for(var i=0;i<jobs.length;i++){{
-    var s=jobs[i];
-    var sys=d[s];
-    if(!sys)continue;
-    var deptVals=[];
-    for(var j=0;j<sys.departments.length;j++)deptVals.push(sys.departments[j]['人均勤奋次数']||0);
-    var rankVals=[];
-    for(var j=0;j<sys.rankings.length;j++)rankVals.push(sys.rankings[j]['累计勤奋次数']||0);
-    var maxD=deptVals.length?Math.max.apply(null,deptVals):1;
-    var maxR=rankVals.length?Math.max.apply(null,rankVals):1;
-    var tid='tbl_'+i+'_';
-    var deptRows='';
-    for(var j=0;j<sys.departments.length;j++){{
-      var r=sys.departments[j];
-      deptRows+='<tr><td><span class="rank '+(j<3?'rank-'+(j+1):'')+'">'+(j+1)+'</span></td><td><strong>'+r['部门']+'</strong></td><td>'+r['人次']+'</td><td><strong style="color:var(--primary)">'+r['人均勤奋次数']+'</strong><div class="progress-bar"><div class="fill" style="width:'+(r['人均勤奋次数']/maxD*100).toFixed(1)+'%"></div></div></td><td>'+r['勤奋次数合计']+'</td></tr>';
-    }}
-    var rankRows='';
-    var rankSlice=sys.rankings.slice(0,20);
-    for(var j=0;j<rankSlice.length;j++){{
-      var r=rankSlice[j];
-      rankRows+='<tr><td><span class="rank '+(r['排名']<=3?'rank-'+r['排名']:'')+'">'+ r['排名']+'</span></td><td><strong>'+r['姓名']+'</strong></td><td>'+r['工号']+'</td><td>'+r['部门']+'</td><td><strong style="color:var(--primary)">'+r['累计勤奋次数']+'</strong><div class="progress-bar"><div class="fill" style="width:'+(r['累计勤奋次数']/maxR*100).toFixed(1)+'%"></div></div></td><td>'+r['月均勤奋次数']+'</td></tr>';
-    }}
-    html+='<div class="tab-content '+(i===0?'active':'')+'" id="tab-'+s+'">'
-      +'<div class="table-wrap"><div class="table-header"><h3>'+s+' · 部门排名</h3></div><div class="table-scroll"><table id="'+tid+'dept"><thead><tr><th>#</th><th>部门</th><th>人次</th><th>人均勤奋</th><th>合计</th></tr><tr class="filter-row"><th><input data-table="'+tid+'dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody>'+deptRows+'</tbody></table></div></div>'
-      +'<div class="table-wrap"><div class="table-header"><h3>'+s+' · 个人排名</h3></div><div class="table-scroll"><table id="'+tid+'rank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>累计勤奋</th><th>月均</th></tr><tr class="filter-row"><th><input data-table="'+tid+'rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="'+tid+'rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody>'+rankRows+'</tbody></table></div></div>'
-      +'</div>';
-  }}
-  contentEl.innerHTML=html||'<div style="padding:24px;color:var(--gray-500)">暂无岗位详情数据</div>';
+  tabsEl.innerHTML=jobs.map((s,i)=>`<button class="tab ${{i===0?'active':''}}" onclick="switchTab('${{s}}',this)">${{s}}</button>`).join('');
+  let html='';
+  jobs.forEach((s,i)=>{{
+    const sys=d[s];
+    if(!sys)return;
+    const deptVals=sys.departments.map(r=>r.人均勤奋次数);
+    const rankVals=sys.rankings.map(r=>r.累计勤奋次数);
+    const maxD=deptVals.length?Math.max(...deptVals):1;
+    const maxR=rankVals.length?Math.max(...rankVals):1;
+    const tid='tbl_'+i+'_';
+    let deptRows=sys.departments.map((r,idx)=>`<tr><td><span class="rank ${{idx<3?'rank-'+(idx+1):''}}"> ${{idx+1}}</span></td><td><strong>${{r.部门}}</strong></td><td>${{r.人次}}</td><td><strong style="color:var(--primary)">${{r.人均勤奋次数}}</strong><div class="progress-bar"><div class="fill" style="width:${{(r.人均勤奋次数/maxD*100).toFixed(1)}}%"></div></div></td><td>${{r.勤奋次数合计}}</td></tr>`).join('');
+    let rankRows=sys.rankings.slice(0,20).map(r=>`<tr><td><span class="rank ${{r.排名<=3?'rank-'+r.排名:''}}">${{r.排名}}</span></td><td><strong>${{r.姓名}}</strong></td><td>${{r.工号}}</td><td>${{r.部门}}</td><td><strong style="color:var(--primary)">${{r.累计勤奋次数}}</strong><div class="progress-bar"><div class="fill" style="width:${{(r.累计勤奋次数/maxR*100).toFixed(1)}}%"></div></div></td><td>${{r.月均勤奋次数}}</td></tr>`).join('');
+    html+=`<div class="tab-content ${{i===0?'active':''}}" id="tab-${{s}}">
+      <div class="table-wrap"><div class="table-header"><h3>${{s}} · 部门排名</h3></div><div class="table-scroll"><table id="${{tid}}dept"><thead><tr><th>#</th><th>部门</th><th>人次</th><th>人均勤奋</th><th>合计</th></tr><tr class="filter-row"><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}dept" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody>${{deptRows}}</tbody></table></div></div>
+      <div class="table-wrap"><div class="table-header"><h3>${{s}} · 个人排名</h3></div><div class="table-scroll"><table id="${{tid}}rank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>累计勤奋</th><th>月均</th></tr><tr class="filter-row"><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="${{tid}}rank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody>${{rankRows}}</tbody></table></div></div>
+    </div>`;
+  }});
+  contentEl.innerHTML=html;
+  if(!html)contentEl.innerHTML='<div style="padding:24px;color:var(--gray-500)">暂无岗位详情数据，请点击查询获取最新数据</div>';
 }}
 
 function switchTab(name,btn){{
-  var p=btn.parentElement;
-  while(p&&!p.classList.contains('tabs-wrapper'))p=p.parentElement;
-  if(!p)return;
-  var tabs=p.querySelectorAll('.tab');
-  for(var i=0;i<tabs.length;i++)tabs[i].classList.remove('active');
-  var contents=p.querySelectorAll('.tab-content');
-  for(var i=0;i<contents.length;i++)contents[i].classList.remove('active');
+  const wrapper=btn.closest('.tabs-wrapper');
+  if(!wrapper)return;
+  wrapper.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  wrapper.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   btn.classList.add('active');
-  var tc=document.getElementById('tab-'+name);if(tc)tc.classList.add('active');
+  const tc=document.getElementById('tab-'+name);if(tc)tc.classList.add('active');
 }}
 
 function renderRanking(d){{
@@ -419,21 +533,50 @@ function renderRanking(d){{
 
 async function queryData(){{
   const app=document.getElementById('app');
+  
+  // 1. 先查前端缓存
+  const cached=tryGetFromCache();
+  if(cached){{
+    DATA=cached;renderDashboard(DATA);
+    // 后台静默刷新最新数据
+    const params=getSelectedParams();
+    try{{
+      let res=await fetch(REFRESH_URL+'?'+params);
+      let data=await res.json();
+      if(data&&!data.loading&&!data.error){{
+        DATA=data;saveToCache(data);renderDashboard(DATA);
+      }}
+    }}catch(e){{/* 静默刷新失败不影响当前显示 */}}
+    return;
+  }}
+  
+  // 2. 无缓存，从服务器获取
   app.innerHTML='<div class="loading-screen"><div class="spinner"></div><div>正在获取数据...</div></div>';
   const params=getSelectedParams();
   try{{
-    let res=await fetch(DATA_URL+'?'+params);
+    let cachedRes=await fetch(DATA_URL+'?'+params);
+    let cachedData=await cachedRes.json();
+    if(cachedData&&!cachedData.loading&&!cachedData.error){{
+      DATA=cachedData;saveToCache(cachedData);renderDashboard(DATA);
+    }}
+    // 强制刷新
+    let res=await fetch(REFRESH_URL+'?'+params);
     let data=await res.json();
     let retries=0;
-    while(data.loading&&retries<180){{
+    while(data.loading&&retries<120){{
       await new Promise(r=>setTimeout(r,3000));
       res=await fetch(DATA_URL+'?'+params);data=await res.json();retries++;
-      if(data.loading){{const el=app.querySelector('.loading-screen div:last-child');if(el)el.textContent=data.message||'正在加载数据...('+retries*3+'秒)';}}
+      if(data.loading){{const el=app.querySelector('.loading-screen div:last-child');if(el)el.textContent=data.message||'加载中...('+retries*3+'秒)';}}
     }}
-    if(data.loading){{app.innerHTML='<div class="loading-screen"><div>数据仍在加载中，请稍后刷新页面</div></div>';return;}}
-    if(data.error){{app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ ${{data.error}}</div></div>`;return;}}
-    DATA=data;renderDashboard(DATA);
-  }}catch(e){{app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ 加载失败: ${{e.message}}</div></div>`;}}
+    if(data.error){{
+      if(DATA){{return;}}
+      app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ ${{data.error}}</div></div>`;return;
+    }}
+    DATA=data;saveToCache(data);renderDashboard(DATA);
+  }}catch(e){{
+    if(DATA){{return;}}
+    app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ 加载失败: ${{e.message}}</div></div>`;
+  }}
 }}
 
 async function forceRefresh(){{
@@ -443,7 +586,7 @@ async function forceRefresh(){{
   try{{
     let res=await fetch(REFRESH_URL+'?'+params);let data=await res.json();
     if(data.error){{app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ ${{data.error}}</div></div>`;return;}}
-    DATA=data;renderDashboard(DATA);
+    DATA=data;saveToCache(data);renderDashboard(DATA);
   }}catch(e){{app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ 刷新失败: ${{e.message}}</div></div>`;}}
 }}
 

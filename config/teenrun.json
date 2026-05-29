@@ -1,0 +1,12 @@
+{
+  "name": "宁波添润数字技术集团有限公司",
+  "brand": "TEENRUN",
+  "app_key": "dingtnfjsjhygyarpqlq",
+  "app_secret": "93vjkfnnggZAoLoiBsflQbl2pEjF6Yid-d0VVRfumXnjYMuaNAXK_J8xluGhoL57",
+  "dept_root": 418290300,
+  "dept_ids": [418290300],
+  "exclude_depts": [974867932],
+  "months": [1, 2, 3, 4],
+  "theme_color": "#1E6FBF",
+  "logo": "添润标识集合-06.png"
+}

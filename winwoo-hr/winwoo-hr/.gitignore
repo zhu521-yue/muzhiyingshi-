@@ -10,6 +10,3 @@ venv/
 dist/
 build/
 *.zip
-*.rar
-.claude/
-winwoo-hr/winwoo-hr/前端看板/
