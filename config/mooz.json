@@ -3,10 +3,16 @@
   "brand": "MOOZ",
   "app_keys": [
     {
+      "app_key": "dinga75wwtmh4znostjw",
+      "app_secret": "sUVYTAFBUhlo63R1GPoME4so31TXVGVf9MgFHY_ymnZqZoEnvLArZzvsJvhkMfCX",
+      "dept_root": 1,
+      "dept_ids": [1]
+    },
+    {
       "app_key": "dingtnfjsjhygyarpqlq",
       "app_secret": "93vjkfnnggZAoLoiBsflQbl2pEjF6Yid-d0VVRfumXnjYMuaNAXK_J8xluGhoL57",
-      "dept_root": 450097425,
-      "dept_ids": [450097425]
+      "dept_root": 1,
+      "dept_ids": [1]
     },
     {
       "app_key": "dingqmkdxwmxblcxuulz",
@@ -15,9 +21,14 @@
       "dept_ids": [1]
     }
   ],
+  "auto_include_from_first_app": true,
+  "exclude_dept_names": ["园区", "客服部", "公共部门", "惠风", "T1事业部", "T2事业部", "T3事业部", "T4事业部"],
+  "force_include_users": ["WIN0006"],
   "months": [1, 2, 3, 4],
   "theme_color": "#4CAF50",
   "logo": "木植控股.png",
-  "overtime_cap_hour": 22,
-  "overtime_cap_minute": 30
+  "overtime_start_hour": 18,
+  "overtime_start_minute": 30,
+  "overtime_cap_hour": 23,
+  "overtime_cap_minute": 59
 }

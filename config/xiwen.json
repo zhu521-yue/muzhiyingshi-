@@ -13,12 +13,21 @@
       "app_secret": "IMMZoLbmYssiuzezn77239_0U4UH-Rcz47klMialicRv4aMSseF1Y-ORmPbY4lWt",
       "dept_root": 1,
       "dept_ids": [1]
+    },
+    {
+      "app_key": "dinga75wwtmh4znostjw",
+      "app_secret": "sUVYTAFBUhlo63R1GPoME4so31TXVGVf9MgFHY_ymnZqZoEnvLArZzvsJvhkMfCX",
+      "dept_root": 1,
+      "dept_ids": [1]
     }
   ],
   "months": [1, 2, 3, 4],
-  "exclude_dept_names": ["添富"],
+  "exclude_dept_names": ["添富", "园区", "客服部", "公共部门", "惠风", "T1事业部", "T2事业部", "T3事业部", "T4事业部"],
+  "job_type_overrides": {"WIN0112": "职能岗"},
   "theme_color": "#1A237E",
   "logo": "喜文4.png",
-  "overtime_cap_hour": 20,
-  "overtime_cap_minute": 30
+  "overtime_start_hour": 18,
+  "overtime_start_minute": 30,
+  "overtime_cap_hour": 23,
+  "overtime_cap_minute": 59
 }

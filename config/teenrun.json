@@ -6,7 +6,14 @@
   "dept_root": 418290300,
   "dept_ids": [418290300],
   "exclude_depts": [974867932],
+  "exclude_dept_names": ["园区"],
+  "force_include_users": ["53446002648825"],
+  "job_type_overrides": {"53446002648825": "职能岗"},
   "months": [1, 2, 3, 4],
   "theme_color": "#1E6FBF",
-  "logo": "添润标识集合-06.png"
+  "logo": "添润标识集合-06.png",
+  "overtime_start_hour": 18,
+  "overtime_start_minute": 30,
+  "overtime_cap_hour": 23,
+  "overtime_cap_minute": 59
 }

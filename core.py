@@ -205,7 +205,12 @@ def _get_credentials(config):
 
 
 def _get_all_users(config, tokens):
-    """从所有凭证获取部门和用户（合并去重），返回 all_user_map"""
+    """从所有凭证获取部门和用户（合并去重），返回 all_user_map
+
+    支持 auto_include_from_first_app 模式：
+      - 第一步：用第一个app拉取所有员工，收集员工名称集合
+      - 第二步：全部app正常拉取，按员工名称过滤（跨app ID不同但名字一致）
+    """
     default_dept_root = config.get('dept_root', 1)
     default_dept_ids = config.get('dept_ids', [1])
 
@@ -213,35 +218,119 @@ def _get_all_users(config, tokens):
     all_users = []
     seen_ids = set()
 
+    # --- 模式判断 ---
+    auto_include = config.get('auto_include_from_first_app', False)
+    include_dept_names = config.get('include_dept_names', [])
+    include_depts = set(config.get('include_depts', []))
+    _use_id_whitelist = bool(include_depts or (include_dept_names and not auto_include))
+    _include_employee_names = set()  # 员工名白名单（auto_include模式）
+
+    if auto_include and tokens:
+        # 第一步：用第一个app拉取全部员工，收集名称
+        first_token = tokens[0][0]
+        print(f"  [{config.get('name','')}] 第一步：发现木植员工名单...")
+        # BFS + 拉用户（复用正常流程）
+        all_sub_ids = []
+        queue = [default_dept_root]
+        while queue:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(get_sub_depts, first_token, did): did for did in queue}
+                next_q = []
+                for future in as_completed(futures):
+                    try:
+                        for d in future.result():
+                            dept_name_map[d['id']] = d.get('name', '')
+                            all_sub_ids.append(d['id'])
+                            next_q.append(d['id'])
+                    except Exception:
+                        pass
+            queue = next_q
+        target_dids = [default_dept_root] + all_sub_ids
+        print(f"  [{config.get('name','')}] 发现 {len(target_dids)} 个部门，拉取员工...")
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(get_dept_users, first_token, did): did for did in target_dids}
+            for future in as_completed(futures):
+                try:
+                    for u in future.result():
+                        _include_employee_names.add(u.get('name', '').strip())
+                except Exception:
+                    pass
+        # 根部门自身也拉
+        try:
+            for u in get_dept_users(first_token, default_dept_root):
+                _include_employee_names.add(u.get('name', '').strip())
+        except Exception:
+            pass
+        _include_employee_names.discard('')
+        print(f"  [{config.get('name','')}] 木植员工名单: {len(_include_employee_names)} 人")
+
+    elif _use_id_whitelist and tokens:
+        # ID白名单模式（保留原有逻辑）
+        first_token = tokens[0][0]
+        if include_dept_names and not include_depts:
+            queue = [default_dept_root]
+            while queue:
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = {executor.submit(get_sub_depts, first_token, did): did for did in queue}
+                    next_q = []
+                    for future in as_completed(futures):
+                        try:
+                            for d in future.result():
+                                dept_name_map[d['id']] = d.get('name', '')
+                                if any(inc in d.get('name', '') for inc in include_dept_names):
+                                    include_depts.add(d['id'])
+                                next_q.append(d['id'])
+                        except Exception:
+                            pass
+                queue = next_q
+        if include_depts:
+            expanded = set(include_depts)
+            for inc_did in list(include_depts):
+                queue = [inc_did]
+                while queue:
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        futures = {executor.submit(get_sub_depts, first_token, did): did for did in queue}
+                        next_q = []
+                        for future in as_completed(futures):
+                            try:
+                                for sd in future.result():
+                                    dept_name_map[sd['id']] = sd.get('name', '')
+                                    expanded.add(sd['id'])
+                                    next_q.append(sd['id'])
+                            except Exception:
+                                pass
+                    queue = next_q
+            include_depts = expanded
+            print(f"  [{config.get('name','')}] 白名单部门: {len(include_depts)} 个")
+        for did in list(include_depts):
+            if did not in dept_name_map:
+                try:
+                    resp = api_get(
+                        f'https://oapi.dingtalk.com/department/get?access_token={first_token}&id={did}')
+                    dept_name_map[did] = resp.get('name', '')
+                except Exception:
+                    pass
+
+    # --- 主循环：从各凭证获取用户 ---
+    _all_departments = None  # 首次完整BFS的结果，后续凭证复用
     for token, cred in tokens:
         dept_root = cred.get('dept_root', default_dept_root)
         dept_ids = cred.get('dept_ids', default_dept_ids)
 
-        # 并发 BFS 收集部门名称映射（从 dept_root 开始）
-        all_sub_ids = []  # 所有子部门ID
-        queue = [dept_root]
-        while queue:
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(get_sub_depts, token, did): did for did in queue}
-                next_queue = []
-                for future in as_completed(futures):
+        if _use_id_whitelist:
+            # ID白名单快路径
+            target_dids = list(include_depts)
+            for did in target_dids:
+                if did not in dept_name_map:
                     try:
-                        subs = future.result()
-                        for d in subs:
-                            dept_name_map[d['id']] = d.get('name', '')
-                            all_sub_ids.append(d['id'])
-                            next_queue.append(d['id'])
+                        resp = api_get(
+                            f'https://oapi.dingtalk.com/department/get?access_token={token}&id={did}')
+                        dept_name_map[did] = resp.get('name', '')
                     except Exception:
                         pass
-            queue = next_queue
-
-        # 获取用户：如果 dept_ids 包含 dept_root，直接用已收集的部门列表
-        if dept_root in dept_ids:
-            # dept_root 下所有部门（包括 dept_root 自身）
-            target_dept_ids = [dept_root] + all_sub_ids
-            print(f"  [{config.get('name','')}] 并发获取 {len(target_dept_ids)} 个部门的用户...")
+            print(f"  [{config.get('name','')}] 白名单获取 {len(target_dids)} 个部门的用户...")
             with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(get_dept_users, token, did): did for did in target_dept_ids}
+                futures = {executor.submit(get_dept_users, token, did): did for did in target_dids}
                 for future in as_completed(futures):
                     try:
                         for u in future.result():
@@ -251,38 +340,84 @@ def _get_all_users(config, tokens):
                     except Exception:
                         pass
         else:
-            # 非根部门，正常递归
-            for did in dept_ids:
-                for u in get_users_recursive(token, did):
-                    if u['userid'] not in seen_ids:
-                        seen_ids.add(u['userid'])
-                        all_users.append(u)
-
-        # 额外获取营销/事业部/中心相关部门的用户（仅当 dept_root 不在 dept_ids 中时）
-        if dept_root not in dept_ids:
-            root_subs = get_sub_depts(token, dept_root)
-            for d in root_subs:
-                if d['id'] in dept_ids:
-                    continue
-                name = d.get('name', '')
-                if '营销' in name or '事业部' in name or '中心' in name:
-                    for u in get_users_recursive(token, d['id']):
+            # 完整扫描（auto_include 或普通模式）
+            if _all_departments is not None:
+                # 后续凭证：复用部门列表
+                target_dept_ids = [dept_root] + _all_departments
+                print(f"  [{config.get('name','')}] 复用部门列表获取 {len(target_dept_ids)} 个部门用户...")
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = {executor.submit(get_dept_users, token, did): did for did in target_dept_ids}
+                    for future in as_completed(futures):
+                        try:
+                            for u in future.result():
+                                if u['userid'] not in seen_ids:
+                                    seen_ids.add(u['userid'])
+                                    all_users.append(u)
+                        except Exception:
+                            pass
+            elif dept_root in dept_ids:
+                # 第一个凭证：完整BFS
+                all_sub_ids = []
+                queue = [dept_root]
+                while queue:
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = {executor.submit(get_sub_depts, token, did): did for did in queue}
+                        next_q = []
+                        for future in as_completed(futures):
+                            try:
+                                subs = future.result()
+                                for d in subs:
+                                    dept_name_map[d['id']] = d.get('name', '')
+                                    all_sub_ids.append(d['id'])
+                                    next_q.append(d['id'])
+                            except Exception:
+                                pass
+                    queue = next_q
+                _all_departments = all_sub_ids
+                target_dept_ids = [dept_root] + all_sub_ids
+                print(f"  [{config.get('name','')}] 首次BFS获取 {len(target_dept_ids)} 个部门的用户...")
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = {executor.submit(get_dept_users, token, did): did for did in target_dept_ids}
+                    for future in as_completed(futures):
+                        try:
+                            for u in future.result():
+                                if u['userid'] not in seen_ids:
+                                    seen_ids.add(u['userid'])
+                                    all_users.append(u)
+                        except Exception:
+                            pass
+            else:
+                for did in dept_ids:
+                    for u in get_users_recursive(token, did):
                         if u['userid'] not in seen_ids:
                             seen_ids.add(u['userid'])
                             all_users.append(u)
 
-    # 排除部门（利用已有的 dept_name_map 避免额外 API 调用）
-    exclude_depts = set(config.get('exclude_depts', []))
+            # 额外获取营销/事业部/中心相关部门的用户
+            if dept_root not in dept_ids:
+                root_subs = get_sub_depts(token, dept_root)
+                for d in root_subs:
+                    if d['id'] in dept_ids:
+                        continue
+                    name = d.get('name', '')
+                    if '营销' in name or '事业部' in name or '中心' in name:
+                        for u in get_users_recursive(token, d['id']):
+                            if u['userid'] not in seen_ids:
+                                seen_ids.add(u['userid'])
+                                all_users.append(u)
 
+    # --- 过滤阶段 ---
     # 按名称排除部门
     exclude_dept_names = config.get('exclude_dept_names', [])
+    # 按ID排除部门
+    exclude_depts = set(config.get('exclude_depts', []))
     if exclude_dept_names:
         for did, dname in dept_name_map.items():
             if any(en in dname for en in exclude_dept_names):
                 exclude_depts.add(did)
 
-    # 如果有排除部门，收集其所有子部门（从 dept_name_map 中通过 API 递归）
-    if exclude_depts:
+    # 递归展开排除部门的子部门
+    if exclude_depts and tokens:
         expanded = set(exclude_depts)
         for ed in list(exclude_depts):
             queue = [ed]
@@ -300,21 +435,56 @@ def _get_all_users(config, tokens):
                 queue = next_q
         exclude_depts = expanded
 
+    # 强制纳入名单
+    force_include = set(str(x) for x in config.get('force_include_users', []))
+    job_type_overrides = {str(k): v for k, v in config.get('job_type_overrides', {}).items()}
+    rename_depts = config.get('rename_depts', {})
+
     all_user_map = {}
     for u in all_users:
         uid = u['userid']
-        if uid not in all_user_map:
-            u_dept_ids = u.get('department', [])
+        if uid in all_user_map:
+            continue
+        u_dept_ids = u.get('department', [])
+        jobnumber = u.get('jobnumber', '')
+        name = u.get('name', '').strip()
+        forced = str(uid) in force_include or (jobnumber and str(jobnumber) in force_include)
+
+        # 排除过滤：ID 或 名称
+        if not forced:
             if exclude_depts and any(d in exclude_depts for d in u_dept_ids):
                 continue
+            if exclude_dept_names:
+                user_dept_names = {dept_name_map[d].strip() for d in u_dept_ids if d in dept_name_map and dept_name_map[d]}
+                if any(en in dn for en in exclude_dept_names for dn in user_dept_names):
+                    continue
+
+        # ID白名单过滤
+        if include_depts and not forced and not any(d in include_depts for d in u_dept_ids):
+            continue
+
+        # 员工名白名单过滤（auto_include模式）
+        if _include_employee_names and not forced and name not in _include_employee_names:
+            continue
+
+        # 取第一个未被排除的部门作为显示部门
+        dept_name = next((dept_name_map[d] for d in u_dept_ids
+                          if d in dept_name_map and d not in exclude_depts), '')
+        if not dept_name:
             dept_name = next((dept_name_map[d] for d in u_dept_ids if d in dept_name_map), '')
-            all_user_map[uid] = {
-                'name': u.get('name', ''),
-                'jobnumber': u.get('jobnumber', ''),
-                'dept_name': dept_name,
-                'position': u.get('position', '') or '',
-                'job_type': classify_job(u.get('position', '')),
-            }
+        dept_name = rename_depts.get(dept_name, dept_name)
+        job_type = classify_job(u.get('position', ''))
+        if str(uid) in job_type_overrides:
+            job_type = job_type_overrides[str(uid)]
+        elif jobnumber and str(jobnumber) in job_type_overrides:
+            job_type = job_type_overrides[str(jobnumber)]
+        all_user_map[uid] = {
+            'name': name,
+            'jobnumber': jobnumber,
+            'dept_name': dept_name,
+            'position': u.get('position', '') or '',
+            'job_type': job_type,
+        }
 
     return all_user_map
 
@@ -499,6 +669,8 @@ def _aggregate(all_user_map, person_data, month_labels, all_records):
         for u in uids:
             info = all_user_map[u]
             dn = info['dept_name'] or '未知部门'
+            if '园区' in dn:
+                continue
             if dn not in dept_agg:
                 dept_agg[dn] = {'uids': set(), 'd': 0}
             dept_agg[dn]['uids'].add(u)
@@ -506,7 +678,7 @@ def _aggregate(all_user_map, person_data, month_labels, all_records):
                 if u in person_data and ml in person_data[u]:
                     dept_agg[dn]['d'] += person_data[u][ml]['diligence']
         departments = []
-        for dn, dd in sorted(dept_agg.items(), key=lambda x: -x[1]['d']):
+        for dn, dd in sorted(dept_agg.items(), key=lambda x: -(x[1]['d'] / max(len(x[1]['uids']), 1))):
             nd = max(len(dd['uids']), 1)
             departments.append({'部门': dn, '人次': len(dd['uids']), '勤奋次数合计': dd['d'],
                                 '人均勤奋次数': round(dd['d']/nd, 2)})
@@ -514,6 +686,8 @@ def _aggregate(all_user_map, person_data, month_labels, all_records):
         rankings = []
         for u in uids:
             info = all_user_map[u]
+            if info['name'] == 'Ajin' or '园区' in (info['dept_name'] or ''):
+                continue
             cd, am = 0, 0
             for ml in month_labels:
                 if u in person_data and ml in person_data[u]:

@@ -5,7 +5,18 @@
   "app_secret": "93vjkfnnggZAoLoiBsflQbl2pEjF6Yid-d0VVRfumXnjYMuaNAXK_J8xluGhoL57",
   "dept_root": 453935060,
   "dept_ids": [500142337, 981812350],
+  "exclude_dept_names": ["园区"],
+  "job_type_overrides": {"WIN0112": "职能岗"},
+  "rename_depts": {"仓储部": "盈世仓储部"},
   "months": [1, 2, 3, 4],
   "theme_color": "#C41E3A",
-  "logo": "盈世标识.png"
+  "logo": "盈世标识.png",
+  "overtime_start_hour": 18,
+  "overtime_start_minute": 30,
+  "overtime_cap_hour": 23,
+  "overtime_cap_minute": 59,
+  "overtime_groups": {
+    "425020083": {"start": "18:00", "cap": "23:59"}
+  },
+  "overtime_exempt_users": ["0153365054840730", "17500370468757863"]
 }

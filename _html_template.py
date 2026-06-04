@@ -290,10 +290,10 @@ function renderDashboard(d){{
       <div class="tabs" id="sysTabs"></div>
       <div id="sysContent"></div>
     </div>
-    <div class="section-title reveal">全公司勤奋排名 TOP20 <span class="s-tag">RANKING</span></div>
+    <div class="section-title reveal">全公司勤奋排名 TOP10 <span class="s-tag">RANKING</span></div>
     <div class="table-wrap reveal">
-      <div class="table-header"><h3>全公司 · 勤奋次数 TOP 20</h3></div>
-      <div class="table-scroll"><table id="tblRank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>岗位</th><th>累计勤奋次数</th><th>月均</th></tr><tr class="filter-row"><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th><th><input data-table="tblRank" oninput="filterTable(this.dataset.table)" placeholder="筛选"></th></tr></thead><tbody id="rankBody"></tbody></table></div>
+      <div class="table-header"><h3>全公司 · 勤奋次数 TOP 10</h3><div style="display:flex;align-items:center;gap:8px"><input id="rankSearch" type="text" placeholder="搜索员工姓名..." style="padding:6px 12px;font-size:13px;border:1px solid var(--border);border-radius:6px;width:180px;background:var(--white)" oninput="searchRanking(this.value)"><span id="rankSearchHint" style="font-size:11px;color:var(--gray-500)"></span></div></div>
+      <div class="table-scroll"><table id="tblRank"><thead><tr><th>排名</th><th>姓名</th><th>工号</th><th>部门</th><th>岗位</th><th>累计勤奋次数</th><th>月均</th></tr></thead><tbody id="rankBody"></tbody></table></div>
     </div>`;
   try{{renderSysCards(d)}}catch(e){{console.error('renderSysCards:',e)}}
   try{{renderCharts(d)}}catch(e){{console.error('renderCharts:',e)}}
@@ -411,10 +411,11 @@ function switchTab(name,btn){{
 
 function renderRanking(d){{
   const body=document.getElementById('rankBody');
-  const top20=d.all_rankings.slice(0,20);
-  const mx=Math.max(...top20.map(r=>r.累计勤奋次数),1);
+  const top10=d.all_rankings.slice(0,10);
+  const mx=Math.max(...top10.map(r=>r.累计勤奋次数),1);
   const tagMap={{'职能岗':'tag-dark','营销岗':'tag-primary','产品岗':'tag-gray'}};
-  body.innerHTML=top20.map(r=>`<tr><td><span class="rank ${{r.排名<=3?'rank-'+r.排名:''}}">${{r.排名}}</span></td><td><strong>${{r.姓名}}</strong></td><td style="color:var(--gray-500)">${{r.工号}}</td><td>${{r.部门}}</td><td><span class="tag ${{tagMap[r.岗位]||'tag-gray'}}">${{r.岗位}}</span></td><td><strong style="color:var(--primary)">${{r.累计勤奋次数}}</strong><div class="progress-bar"><div class="fill" style="width:${{(r.累计勤奋次数/mx*100).toFixed(1)}}%"></div></div></td><td>${{r.月均勤奋次数}}</td></tr>`).join('');
+  body.innerHTML=top10.map(r=>`<tr><td><span class="rank ${{r.排名<=3?'rank-'+r.排名:''}}">${{r.排名}}</span></td><td><strong>${{r.姓名}}</strong></td><td style="color:var(--gray-500)">${{r.工号}}</td><td>${{r.部门}}</td><td><span class="tag ${{tagMap[r.岗位]||'tag-gray'}}">${{r.岗位}}</span></td><td><strong style="color:var(--primary)">${{r.累计勤奋次数}}</strong><div class="progress-bar"><div class="fill" style="width:${{(r.累计勤奋次数/mx*100).toFixed(1)}}%"></div></div></td><td>${{r.月均勤奋次数}}</td></tr>`).join('');
+  window._allRankings=d.all_rankings;
 }}
 
 async function queryData(){{
@@ -445,6 +446,27 @@ async function forceRefresh(){{
     if(data.error){{app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ ${{data.error}}</div></div>`;return;}}
     DATA=data;renderDashboard(DATA);
   }}catch(e){{app.innerHTML=`<div class="loading-screen"><div style="color:var(--primary)">⚠ 刷新失败: ${{e.message}}</div></div>`;}}
+}}
+
+function searchRanking(keyword){{
+  const hint=document.getElementById('rankSearchHint');
+  const body=document.getElementById('rankBody');
+  if(!body||!window._allRankings)return;
+  if(!keyword||!keyword.trim()){{
+    if(hint)hint.textContent='';
+    renderRanking(DATA);
+    return;
+  }}
+  const kw=keyword.trim().toLowerCase();
+  const matched=window._allRankings.filter(r=>r.姓名&&r.姓名.toLowerCase().includes(kw));
+  if(!matched.length){{
+    if(hint)hint.textContent='未找到匹配员工';
+    return;
+  }}
+  if(hint)hint.textContent='找到 '+matched.length+' 人';
+  const mx=Math.max(...matched.map(r=>r.累计勤奋次数),1);
+  const tagMap={{'职能岗':'tag-dark','营销岗':'tag-primary','产品岗':'tag-gray'}};
+  body.innerHTML=matched.map(r=>`<tr><td><span class="rank ${{r.排名<=3?'rank-'+r.排名:''}}">${{r.排名}}</span></td><td><strong>${{r.姓名}}</strong></td><td style="color:var(--gray-500)">${{r.工号}}</td><td>${{r.部门}}</td><td><span class="tag ${{tagMap[r.岗位]||'tag-gray'}}">${{r.岗位}}</span></td><td><strong style="color:var(--primary)">${{r.累计勤奋次数}}</strong><div class="progress-bar"><div class="fill" style="width:${{(r.累计勤奋次数/mx*100).toFixed(1)}}%"></div></div></td><td>${{r.月均勤奋次数}}</td></tr>`).join('');
 }}
 
 function filterTable(tableId){{

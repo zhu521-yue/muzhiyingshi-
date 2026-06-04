@@ -1,8 +1,0 @@
-App ID  :
-de7a607c-f1cf-4066-ab4c-de6e9d866014
-原企业内部应用AgentId
-4112483772
-Client ID (原 AppKey 和 SuiteKey)
-dingqmkdxwmxblcxuulz
-Client Secret (原 AppSecret 和 SuiteSecret)
-当前使用:IMMZoLbmYssiuzezn77239_0U4UH-Rcz47klMialicRv4aMSseF1Y-ORmPbY4lWt
